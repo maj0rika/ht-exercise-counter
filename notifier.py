@@ -111,6 +111,7 @@ def send_weekly_report(admin_chat: str, summary: dict, config: dict, dry_run: bo
 	template = _load_template(config, "weekly")
 	message = template.format(
 		week_key=summary.get("week_key", "unknown"),
+		week_range=summary.get("week_range", summary.get("week_key", "unknown")),
 		member_details_block=_render_member_details_block(summary.get("members", [])),
 	)
 	_send(admin_chat, message, dry_run)

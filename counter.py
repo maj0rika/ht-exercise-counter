@@ -2,11 +2,21 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
+
+
+def week_range_str(week_key: str) -> str:
+	"""'2026-W15' → '2026.04.06 ~ 2026.04.12' (ISO 월~일)"""
+	try:
+		monday = datetime.strptime(f"{week_key}-1", "%G-W%V-%u")
+		sunday = monday + timedelta(days=6)
+		return f"{monday.strftime('%Y.%m.%d')} ~ {sunday.strftime('%Y.%m.%d')}"
+	except ValueError:
+		return week_key
 
 
 def count_verifications(messages: list[dict], config: dict, target_date: str | None = None) -> dict:
@@ -66,6 +76,7 @@ def count_verifications(messages: list[dict], config: dict, target_date: str | N
 def weekly_summary(
 	member_timestamps: dict,
 	config: dict,
+	week_key: str | None = None,
 	active_members: list | None = None,
 ) -> dict:
 	"""멤버별 timestamp 리스트 → 주간 요약.
@@ -98,8 +109,13 @@ def weekly_summary(
 
 	rows.sort(key=lambda r: (-r["count"], r["name"]))
 
-	week_key = datetime.now(KST).strftime("%G-W%V")
-	return {"week_key": week_key, "members": rows}
+	if week_key is None:
+		week_key = datetime.now(KST).strftime("%G-W%V")
+	return {
+		"week_key": week_key,
+		"week_range": week_range_str(week_key),
+		"members": rows,
+	}
 
 
 def filter_photo_messages(messages: list[dict], photo_type) -> list[dict]:

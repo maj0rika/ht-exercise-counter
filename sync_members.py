@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import re
 import shutil
 import subprocess
@@ -31,6 +32,65 @@ import sys
 from pathlib import Path
 
 CANONICAL_SUFFIX_RE = re.compile(r"\.\d{2,4}$")
+
+
+def fetch_room_member_ids(chat_id: int) -> list[int]:
+	"""현재 채팅방의 실제 멤버 user_id 리스트 (NTChatRoom.watermarkKeys 기반).
+
+	카카오톡 Mac DB는 `NTChatRoom.watermarkKeys` BLOB에 현재 방의 모든 멤버
+	user_id를 Apple bplist00 포맷 배열로 저장한다 (displayMemberIds는 단지
+	프로필 프리뷰용 5명만 담고 있음). 이 bplist를 파싱해 정확한 현재 멤버
+	목록을 얻는다. `activeMembersCount`와 동일한 수가 나와야 정상.
+	"""
+	sql = f"SELECT hex(watermarkKeys) FROM NTChatRoom WHERE chatId = {int(chat_id)}"
+	result = subprocess.run(
+		["kakaocli", "query", sql],
+		capture_output=True, text=True, timeout=30,
+	)
+	if result.returncode != 0:
+		raise RuntimeError(f"kakaocli query 실패: {result.stderr.strip()}")
+	rows = json.loads(result.stdout or "[]")
+	if not rows or not rows[0] or not rows[0][0]:
+		return []
+	blob = bytes.fromhex(rows[0][0])
+	data = plistlib.loads(blob)
+	if not isinstance(data, list):
+		return []
+	return [int(x) for x in data if isinstance(x, int)]
+
+
+def fetch_user_names(user_ids) -> dict:
+	"""user_id 집합 → {user_id: canonical_name} 매핑.
+
+	NTMultiProfile.linkId=0 → NTUser.nickName → NTUser.displayName 순으로 fallback.
+	이름을 못 찾으면 'unknown_{id}' 문자열.
+	"""
+	if not user_ids:
+		return {}
+	ids_csv = ",".join(str(int(u)) for u in user_ids)
+	sql = f"""
+	SELECT u.userId, COALESCE(mp.displayName, u.nickName, u.displayName) AS name
+	FROM NTUser u
+	LEFT JOIN NTMultiProfile mp
+		ON mp.userId = u.userId AND mp.linkId = 0
+	WHERE u.userId IN ({ids_csv}) AND u.linkId = 0
+	"""
+	result = subprocess.run(
+		["kakaocli", "query", sql],
+		capture_output=True, text=True, timeout=30,
+	)
+	if result.returncode != 0:
+		return {}
+	rows = json.loads(result.stdout or "[]")
+	mapping = {}
+	for row in rows:
+		uid = int(row[0])
+		name = (row[1] or "").strip() if row[1] else ""
+		mapping[uid] = name or f"unknown_{uid}"
+	# 쿼리에서 누락된 id는 fallback
+	for uid in user_ids:
+		mapping.setdefault(int(uid), f"unknown_{int(uid)}")
+	return mapping
 
 
 def fetch_members_from_db(chat_id: int, since_days: int = 0) -> list[dict]:
