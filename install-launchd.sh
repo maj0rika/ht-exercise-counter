@@ -45,7 +45,7 @@ cp "$OUTPUT" "$TARGET"
 launchctl load "$TARGET"
 
 echo "launchd 등록 완료: $TARGET"
-echo "다음 실행 시각: 매일 23:00 KST"
+echo "다음 실행 시각: 매일 23:59 KST (launchd는 초 단위 미지원)"
 echo ""
 echo "확인: launchctl list | grep com.ht.exercise-counter"
 echo "해제: launchctl unload $TARGET"

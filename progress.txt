@@ -1,0 +1,63 @@
+HT 운동 인증 카운터 - Ralph 진행 로그
+=========================================
+
+[US-001] DB 스키마 검증 및 photo_message_type 확정  ✅
+- kakaocli query "SELECT type, COUNT(*) FROM NTChatMessage GROUP BY type"로 type=2가 raw photo임 확인
+- kakaocli CLI는 NTChatMessage.type(int) → JSON type "photo"/"text" 문자열로 정규화
+- config.json photo_message_type = "photo" (CLI JSON용), photo_message_type_raw = 2 (원시 DB용)
+- counter.filter_photo_messages가 문자열 라벨 기준으로 동작함 확인
+
+[US-002] 실제 [#HT] 인증방 멤버 목록 반영  ✅
+- kakaocli search "#HT" → 3개 방 후보 식별 (인증방, 운영진방, 공지방)
+- 처음에 헬스매니아방 / 운영진방으로 오식별 → 사용자 지적으로 재조회
+- 최종 chat_id = 388012281226605 ([#HT] 인증방, 103 active + 127 recently active members)
+- NTMultiProfile linkId=0 필터로 멀티프로필 중복(9건/user) 제거
+- config.json members[] = 127명 실제 멤버 (user_id, canonical, aliases)
+- canonical = "이름.연도" 포맷에서 연도 접미사 제거한 형태
+
+[US-003] dry-run 전체 흐름 실행  ✅
+- Python 3.9 호환성: collector.py / counter.py / main.py / storage.py에
+  `from __future__ import annotations` 추가 (PEP 604 union syntax가 런타임 평가되는 문제)
+- python3 main.py 실행 → 59건 수집 → 56건 photo 집계 → DRY RUN 로그 출력
+- data/counter.db 생성, verifications(56) / daily_summaries(1) / run_log(1 success) 존재
+- notifier._send는 dry_run=true 시 `[DRY RUN] →` 로그만 기록함 확인
+- logs/counter.log에 "집계 시작" → "집계 완료" 모두 기록됨
+
+[US-004] launchd plist 경로 및 실행 환경 교정  ✅
+- ProgramArguments[0]: /usr/local/bin/python3 → /usr/bin/python3 (실제 존재)
+- 모든 경로: /Users/leetaehee/ht-exercise-counter → /Users/leetaehee/.gemini/antigravity/scratch/ht-exercise-counter
+- StartCalendarInterval Hour=23 Minute=0, TZ=Asia/Seoul 유지
+- plutil -lint OK
+
+[Post-review fix] 송헌주 "2회" 오집계 수정
+- 원인: kakaocli --since 1d는 24시간 window라 전일 23:37 사진까지 포함 → counter가 "고유 날짜 수"를 세므로 2가 됨
+- 수정: counter.count_verifications에 target_date 파라미터 추가, 필터링 후 오늘 날짜만 집계
+- 검증: 재실행 후 raw_photo=55(56→55), 송헌주 1회(2회→1회)로 정상화
+
+Learnings for future iterations:
+- kakaocli query는 --json 플래그 미지원 (기본으로 JSON 반환)
+- kakaocli messages는 --json 필요
+- Python 3.9.6가 시스템 기본 — PEP 604 union 타입은 annotations future import 필수
+- NTMultiProfile은 한 유저에 여러 행 존재 가능 → linkId=0 필터 필수
+- 채팅방 이름은 모호할 수 있음 ("[#HT] 인증방" vs "[#HT] 운영진방") → 멤버 수, 메시지 밀도, 공지 패턴으로 교차 검증
+
+[US-005] 운영진방 전송 경로 안정화 및 재전송 도구화  ✅
+- `scripts/ensure_kakao_chat.py`
+  - 카카오톡 미실행 / 친구목록 / 대화목록 / 설정창 / 이미 열린 채팅창 상태를 흡수
+  - 메인 "카카오톡" 창 확보 → `Cmd+2` 채팅 탭 복구 → 대상 채팅창 확보 → 입력창 focus
+- `notifier.py`
+  - `Cmd+V` 붙여넣기 경로 폐기
+  - 운영진방 `front window -> scroll area 2 -> text area 1` 입력창에 본문 `AXValue` 직접 세팅 후 Enter
+  - 배치 전송 API `send_messages_batch()` 추가
+- `scripts/send_admin_messages.py`
+  - 여러 메시지 JSON payload를 운영진방에 순차 전송
+  - `--force-send`로 config.json의 dry_run=true를 무시 가능
+- `scripts/build_format_case_messages.py`
+  - 포맷 검증용 6건 payload 생성
+  - 구조: 정정 안내 → Daily 기본 → Daily 다회 업로드 예시 → Weekly 진행중 주 → Weekly 완료된 지난주 → 정정 완료
+- 운영 스케줄 결정
+  - 테스트용 4케이스 재전송은 수동 스크립트 전용
+  - 실제 운영은 `main.py`를 launchd로 매일 23:59 1회 실행
+  - 평일/토요일: Daily 1건
+  - 일요일: Daily 1건 + Weekly 1건
+  - launchd는 초 단위를 지원하지 않아 23:59:59 대신 23:59로 고정

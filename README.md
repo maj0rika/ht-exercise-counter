@@ -4,8 +4,8 @@
 
 - 카카오톡 Mac 로컬 DB에서 사진 메시지 수집 (`kakaocli`)
 - Python으로 파싱·집계·SQLite 저장
-- 카카오톡 Accessibility API로 운영진방에 메시지 전송 (`kmsg`)
-- launchd로 매일 23:00 KST 자동 실행
+- 카카오톡 Accessibility API로 운영진방에 메시지 전송 (`kmsg` + AX 입력창 직접 세팅)
+- launchd로 매일 23:59 KST 자동 실행
 
 ## 아키텍처
 
@@ -23,7 +23,7 @@
                                      │  storage  │  data/counter.db (verifications, summaries, run_log)
                                      └─────┬─────┘
                                            ▼
-                                     ┌───────────┐   kmsg send --chat-id
+                                     ┌───────────┐   ensure_kakao_chat + AXValue + Enter
                                      │  notifier │ ─────────────────▶ [#HT] 운영진방
                                      └───────────┘
 ```
@@ -96,7 +96,7 @@ python3 main.py
 - 템플릿 `launchd/com.ht.exercise-counter.plist.template`를 현재 경로/python으로 치환
 - `~/Library/LaunchAgents/com.ht.exercise-counter.plist`에 복사
 - `launchctl load` 실행
-- 매일 **23:00 KST**에 `main.py` 실행
+- 매일 **23:59 KST**에 `main.py` 실행
 
 확인:
 
@@ -118,7 +118,7 @@ launchctl unload ~/Library/LaunchAgents/com.ht.exercise-counter.plist
 | `chat_id` | kakaocli 정수형 chat_id (`kakaocli chats`로 조회) | `123456789012345` |
 | `admin_chat_id` | kmsg hash chat_id (`kmsg chats --json`로 조회) | `"chat_XXXXXXXXXXXX"` |
 | `admin_chat_name` | 전송 대상 이름 (로그/표시용) | `"[#HT] 운영진방"` |
-| `admin_sender` | 송신 백엔드 — 현재 `"kmsg"`만 지원 | `"kmsg"` |
+| `admin_sender` | 송신 백엔드. `"kmsg"`는 채팅창/입력창을 확보한 뒤 AXValue로 본문을 직접 넣고 전송, `"kmsg_direct"`는 레거시 직접 타이핑 | `"kmsg"` |
 | `photo_message_type` | kakaocli JSON의 사진 타입 라벨 | `"photo"` |
 | `photo_message_type_raw` | NTChatMessage.type 원시 정수값 | `2` |
 | `weekly_target` | 주간 인증 목표 횟수 | `4` |
@@ -291,6 +291,9 @@ ht-exercise-counter/
 ├── counter.py                                   # 사진 필터링, 일별/주간 집계, 중복플래그
 ├── storage.py                                   # SQLite CRUD, 멱등성 (msg_hash UNIQUE)
 ├── notifier.py                                  # kmsg send 래퍼 (운영진방 전송)
+├── scripts/build_format_case_messages.py        # 포맷 검증용 6건 payload 생성
+├── scripts/ensure_kakao_chat.py                 # 카카오톡 상태별 대상 채팅창 확보
+├── scripts/send_admin_messages.py               # 여러 메시지 배치 전송
 ├── sync_members.py                              # members 배열 자동 동기화 (kakaocli DB 기반)
 ├── config.example.json                          # 설정 템플릿
 ├── config.json                                  # 실사용 설정 (.gitignore)
@@ -316,6 +319,10 @@ ht-exercise-counter/
 - **멱등성**: `msg_hash = sha256(sender_id|timestamp|type)`가 UNIQUE
 - **0건 처리**: 수집 결과 0건이면 정상 집계로 저장하지 않고 에러 알림 발송
 - **dry-run**: `config.dry_run=true`면 `[DRY RUN]` 로그만 남김
+- **실운영 cadence**: launchd가 매일 23:59에 `main.py`를 1회 실행
+  - 평일/토요일: Daily 1건
+  - 일요일: Daily 1건 + Weekly 1건
+  - launchd는 초 단위를 지원하지 않아 `23:59:59` 대신 `23:59`로 설정
 
 ## 트러블슈팅
 
@@ -333,22 +340,24 @@ launchd에서 실행될 땐 `EnvironmentVariables.PATH`가 `/usr/local/bin:/opt/
 
 수동으로 여러 건을 연달아 전송할 때 맥북 스피커에서 Funk/bonk 경고음이 반복된다면, **카카오톡이 frontmost(최상위 활성 앱)이 아닌 상태에서 Cmd+2 키스트로크가 엉뚱한 앱(예: 터미널 / Claude Code / Electron 기반 앱)으로 전달**되고 있기 때문.
 
-현재 `notifier._prepare_kakaotalk()`은 매 전송 직전에:
+현재 기본 전송은 매 전송 직전에:
 1. `tell application "KakaoTalk" to activate` 실행
 2. 카톡이 실제 frontmost로 올라올 때까지 최대 3초 대기
 3. frontmost가 되면 `AXRaise` + `Cmd+2` 실행
-4. 안 되면 keystroke 생략 + kmsg `--deep-recovery`로 폴백
+4. `scripts/ensure_kakao_chat.py`로 대상 채팅창과 입력창 확보
+5. 해당 입력창 `AXValue`에 본문을 직접 세팅
+6. 마지막에 `Enter` 실행
 
 **권장 사항**:
 - 수동 테스트 시 카카오톡 창을 먼저 클릭해 앞에 띄운 뒤 스크립트 실행
 - 시스템 볼륨을 낮춰두면 잠재적 bonk가 들려도 부담 적음
-- launchd 23:00 자동 실행 경로는 다른 앱이 frontmost가 아니므로 이 문제 영향권 밖
+- launchd 23:59 자동 실행 경로는 다른 앱이 frontmost가 아니므로 이 문제 영향권 밖
 
 ---
 
 ### `kmsg send: rc=1` 또는 "Chat not found" 가 연속 전송 때만 발생
 
-첫 번째 전송은 성공했는데 두 번째부터 실패한다면, 카카오톡 사이드바가 '친구' 또는 '오픈채팅' 탭으로 리셋된 상태다. kmsg는 **현재 활성 사이드바 탭 안에서만** 채팅방을 검색하므로, '채팅' 탭이 아니면 찾지 못한다.
+첫 번째 전송은 성공했는데 두 번째부터 실패한다면, 카카오톡 사이드바가 '친구' 또는 '오픈채팅' 탭으로 리셋된 상태다. `kmsg read`/`kmsg send`는 **현재 활성 사이드바 탭 안에서만** 채팅방을 검색하므로, '채팅' 탭이 아니면 찾지 못한다.
 
 `notifier._prepare_kakaotalk()`이 매 전송 직전에 자동으로:
 1. KakaoTalk `activate`
@@ -366,6 +375,53 @@ osascript -e 'tell application "System Events" to tell process "KakaoTalk" to ke
 ```
 
 KakaoTalk 단축키: `Cmd+1`(친구) / `Cmd+2`(채팅) / `Cmd+3`(오픈채팅). 다른 앱에서 이 단축키가 가로채고 있지 않은지도 확인.
+
+### 운영진방 배치 재전송
+
+여러 메시지를 한 번에 다시 보내야 할 때는 레포 스크립트를 사용한다.
+
+```bash
+python3 scripts/send_admin_messages.py \
+  --config config.json \
+  --messages /tmp/messages.json \
+  --force-send
+```
+
+`/tmp/messages.json` 형식:
+
+```json
+{
+  "messages": [
+    "첫 메시지",
+    "둘째 메시지"
+  ]
+}
+```
+
+이 스크립트는:
+1. 메시지 배열을 모두 먼저 메모리에서 준비
+2. `scripts/ensure_kakao_chat.py --chat "[#HT] 운영진방"`으로 대상 채팅창/입력창을 확보
+3. 각 메시지를 입력창 `AXValue`에 직접 넣고 `Enter`
+
+즉, 긴 본문을 타이핑하거나 클립보드 붙여넣기에 의존하지 않는다.
+
+### 포맷 검증용 4케이스 생성
+
+테스트용으로는 안내문 전후 포함 6건 payload를 생성할 수 있다.
+
+```bash
+python3 scripts/build_format_case_messages.py \
+  --config config.json \
+  --output /tmp/htc_format_cases.json
+```
+
+생성 구조:
+1. 정정 안내
+2. Daily 기본
+3. Daily 다회 업로드 예시
+4. Weekly 진행중 주
+5. Weekly 완료된 지난주
+6. 정정 완료
 
 ### `kmsg send: WINDOW_NOT_READY`
 
@@ -387,12 +443,12 @@ kmsg send --chat-id "chat_XXXXXXXXXXXX" "test"
 
 - **자정 직후 실행** 문제: `kakaocli messages --since 1d`는 24시간 window라 어제 사진만 잡히는데 `counter.count_verifications`는 기본적으로 "오늘 날짜"로 필터링 → 0건
 - 해결: `counter.count_verifications(messages, config, target_date="YYYY-MM-DD")`에 명시적으로 어제 날짜 전달, 또는 `collector.collect_messages(..., since="2d")`로 수집 범위 확대
-- launchd는 23:00 KST에 실행되므로 평상시엔 이 문제 없음
+- launchd는 23:59 KST에 실행되므로 평상시엔 이 문제 없음
 
 ### 한 명이 "2회"로 중복 집계됨
 
 - 원인: `--since 1d`는 정확히 24시간이라 어제 23:XX 사진까지 함께 수집됨 → `counter`가 고유 날짜 수를 세면 날짜가 2개가 되어 2로 카운트
-- 해결: `target_date` 파라미터 명시 (현재 main.py는 오늘 날짜로 고정 — launchd 실행 시간인 23:00 KST에서는 거의 문제되지 않음)
+- 해결: `target_date` 파라미터 명시 (현재 main.py는 오늘 날짜로 고정 — launchd 실행 시간인 23:59 KST에서는 거의 문제되지 않음)
 
 ### KakaoTalk 앱이 꺼져 있음
 

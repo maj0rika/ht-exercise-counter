@@ -15,11 +15,11 @@
     <key>WorkingDirectory</key>
     <string>__PROJECT_ROOT__</string>
 
-    <!-- 매일 23:00 KST 실행 -->
+    <!-- 매일 23:59 KST 실행 (launchd는 초 단위를 지원하지 않음) -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key><integer>23</integer>
-        <key>Minute</key><integer>0</integer>
+        <key>Minute</key><integer>59</integer>
     </dict>
 
     <key>StandardOutPath</key>

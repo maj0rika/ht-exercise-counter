@@ -1,0 +1,62 @@
+{
+  "project": "HT 운동 인증 카운터 - 운영 전송 경로 안정화",
+  "description": "실제 kakaocli/DB 데이터로 카운터를 검증하고, 카카오톡 운영진방 전송/재전송/운영 스케줄을 안정화한다.",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "DB 스키마 검증 및 photo_message_type 확정",
+      "passes": true,
+      "acceptanceCriteria": [
+        "kakaocli schema 또는 query로 실제 카카오톡 메시지 테이블(NTChatMessage 또는 대체 테이블)의 구조를 확인한 근거가 있음",
+        "type 컬럼 값 분포를 query로 조회해 사진 메시지에 해당하는 정수값을 결정함",
+        "config.json의 photo_message_type이 실제 DB 값과 일치하거나, 불일치 시 교체됨",
+        "counter.filter_photo_messages가 실제 JSON 출력 구조와 호환되는지 점검한 메모가 progress.txt에 남음"
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "실제 HT 인증방 멤버 목록 추출 및 config.json 반영",
+      "passes": true,
+      "acceptanceCriteria": [
+        "kakaocli chats로 'HT'가 포함된 인증방을 식별함",
+        "kakaocli members 또는 query로 해당 방의 실제 참가자 목록을 추출함",
+        "config.json의 members 배열이 샘플(홍길동/김철수/박영희)에서 실제 멤버들로 대체됨",
+        "각 멤버에 canonical과 aliases(관찰된 표기) 구조가 유지됨"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "dry-run 전체 흐름 실행",
+      "passes": true,
+      "acceptanceCriteria": [
+        "python3 main.py 실행이 예외 없이 완료됨 (또는 수집 0건 경로로 정상 종료)",
+        "data/counter.db가 생성되고 verifications / daily_summaries / run_log 테이블이 존재함",
+        "dry_run=true 상태이므로 notifier가 실제 전송하지 않고 [DRY RUN] 로그만 기록함",
+        "logs/counter.log에 '집계 시작' → '집계 완료' 또는 명확한 경고/에러가 기록됨"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "launchd plist 경로 및 실행 환경 교정",
+      "passes": true,
+      "acceptanceCriteria": [
+        "plist의 ProgramArguments / WorkingDirectory / StandardOutPath / StandardErrorPath가 실제 프로젝트 절대 경로(/Users/leetaehee/.gemini/antigravity/scratch/ht-exercise-counter)로 수정됨",
+        "python 인터프리터 경로가 시스템에 존재하는 경로(/usr/bin/python3 또는 /opt/homebrew/bin/python3)로 설정됨",
+        "StartCalendarInterval이 23:59으로 설정되고 TZ=Asia/Seoul 환경변수가 포함됨",
+        "plistlint 또는 plutil -lint로 plist 구문이 유효함을 검증함"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "카카오톡 운영진방 전송 경로 안정화 및 재전송 도구화",
+      "passes": true,
+      "acceptanceCriteria": [
+        "운영진방 전송이 Cmd+V 의존이 아니라 입력창 AXValue 직접 세팅 경로로 동작함",
+        "카카오톡이 안 열려 있거나 메인 창/채팅 창 상태가 섞여 있어도 scripts/ensure_kakao_chat.py로 대상 채팅창과 입력창 확보가 가능함",
+        "여러 메시지를 순차 재전송하는 scripts/send_admin_messages.py가 존재하고 dry-run 강제 해제 옵션(--force-send)을 제공함",
+        "포맷 검증용 4케이스(Daily 2 + Weekly 2)를 생성하는 스크립트가 존재함",
+        "실제 운영 스케줄은 매일 23:59 데일리 1건, 일요일 23:59 위클리 1건으로 문서화됨"
+      ]
+    }
+  ]
+}

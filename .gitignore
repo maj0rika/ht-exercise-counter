@@ -21,8 +21,6 @@ env/
 
 # OMC / Ralph session state
 .omc/
-prd.json
-progress.txt
 
 # 로컬 설치된 launchd plist (실제 절대 경로 포함)
 launchd/com.ht.exercise-counter.plist
