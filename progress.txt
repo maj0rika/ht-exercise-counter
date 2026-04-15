@@ -10,7 +10,7 @@ HT 운동 인증 카운터 - Ralph 진행 로그
 [US-002] 실제 [#HT] 인증방 멤버 목록 반영  ✅
 - kakaocli search "#HT" → 3개 방 후보 식별 (인증방, 운영진방, 공지방)
 - 처음에 헬스매니아방 / 운영진방으로 오식별 → 사용자 지적으로 재조회
-- 최종 chat_id = 388012281226605 ([#HT] 인증방, 103 active + 127 recently active members)
+- 최종 chat_id = <HT_CERT_CHAT_ID> ([#HT] 인증방, 103 active + 127 recently active members)
 - NTMultiProfile linkId=0 필터로 멀티프로필 중복(9건/user) 제거
 - config.json members[] = 127명 실제 멤버 (user_id, canonical, aliases)
 - canonical = "이름.연도" 포맷에서 연도 접미사 제거한 형태
@@ -25,7 +25,7 @@ HT 운동 인증 카운터 - Ralph 진행 로그
 
 [US-004] launchd plist 경로 및 실행 환경 교정  ✅
 - ProgramArguments[0]: /usr/local/bin/python3 → /usr/bin/python3 (실제 존재)
-- 모든 경로: /Users/leetaehee/ht-exercise-counter → /Users/leetaehee/.gemini/antigravity/scratch/ht-exercise-counter
+- 모든 경로: <OLD_PROJECT_ROOT> → <PROJECT_ROOT>
 - StartCalendarInterval Hour=23 Minute=0, TZ=Asia/Seoul 유지
 - plutil -lint OK
 

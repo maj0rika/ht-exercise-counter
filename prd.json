@@ -40,7 +40,7 @@
       "title": "launchd plist 경로 및 실행 환경 교정",
       "passes": true,
       "acceptanceCriteria": [
-        "plist의 ProgramArguments / WorkingDirectory / StandardOutPath / StandardErrorPath가 실제 프로젝트 절대 경로(/Users/leetaehee/.gemini/antigravity/scratch/ht-exercise-counter)로 수정됨",
+        "plist의 ProgramArguments / WorkingDirectory / StandardOutPath / StandardErrorPath가 실제 프로젝트 절대 경로(<PROJECT_ROOT>)로 수정됨",
         "python 인터프리터 경로가 시스템에 존재하는 경로(/usr/bin/python3 또는 /opt/homebrew/bin/python3)로 설정됨",
         "StartCalendarInterval이 23:59으로 설정되고 TZ=Asia/Seoul 환경변수가 포함됨",
         "plistlint 또는 plutil -lint로 plist 구문이 유효함을 검증함"
