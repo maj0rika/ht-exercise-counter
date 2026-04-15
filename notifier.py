@@ -33,9 +33,20 @@ RAISE_MAIN_WINDOW_SCRIPT = (
 # 카톡 사이드바에서 '채팅' 탭으로 전환 (Cmd+2).
 # kmsg는 현재 활성 사이드바 탭 안에서만 채팅방을 검색하므로,
 # 친구/오픈채팅 탭이 활성이면 채팅방을 못 찾고 rc=1로 실패.
+#
+# 주의: System Events의 keystroke는 실제로 OS 전역 입력 스트림에 키를 쏘기
+# 때문에 `tell process "KakaoTalk"` 문법에도 불구하고 진짜 frontmost 앱이
+# 키를 받는다. 그래서 카톡이 frontmost로 올라와 있을 때만 이 스크립트를
+# 실행해야 한다. 아니면 엉뚱한 앱(Claude Code / Electron 등)이 Cmd+2를
+# 받아 시스템 Funk 경고음이 반복 발생한다 (macOS 기본 bonk).
 SWITCH_TO_CHAT_TAB_SCRIPT = (
 	'tell application "System Events" to tell process "KakaoTalk" '
 	'to keystroke "2" using command down'
+)
+
+FRONTMOST_CHECK_SCRIPT = (
+	'tell application "System Events" to get name of first process '
+	'whose frontmost is true'
 )
 
 
@@ -124,18 +135,55 @@ def send_error_alert(admin_chat: str, error_msg: str, config: dict, dry_run: boo
 	_send(admin_chat, message, dry_run)
 
 
+def _is_kakaotalk_frontmost() -> bool:
+	"""현재 frontmost 앱이 카카오톡인지 확인."""
+	try:
+		r = subprocess.run(
+			["osascript", "-e", FRONTMOST_CHECK_SCRIPT],
+			capture_output=True, text=True, timeout=3,
+		)
+		return "KakaoTalk" in (r.stdout or "")
+	except Exception:
+		return False
+
+
 def _prepare_kakaotalk():
 	"""kmsg 호출 전 카톡을 전송 가능 상태로 정렬.
 
-	1. 앱 activate + 메인 "카카오톡" 윈도우 AXRaise
-	2. Cmd+2로 사이드바 '채팅' 탭 활성화
-	3. 짧은 delay
+	카톡이 실제 frontmost로 올라올 때까지 대기한 다음에만 AXRaise와
+	Cmd+2 keystroke를 실행한다. 프론트가 아닌 상태에서 keystroke를
+	쏘면 엉뚱한 앱(예: Claude Code/Electron)이 키를 받아 macOS Funk
+	경고음이 연속 발생한다 (수동 테스트 중 '굉음' 원인).
+
+	카톡을 프론트로 올리지 못하면 keystroke를 생략하고, kmsg의
+	--deep-recovery 옵션이 알아서 윈도우 상태를 복구하도록 맡긴다.
+	launchd 백그라운드 실행 경로에서는 어차피 다른 앱이 frontmost가
+	아니므로 영향 없음.
 	"""
 	try:
 		subprocess.run(
 			["osascript", "-e", 'tell application "KakaoTalk" to activate'],
 			capture_output=True, text=True, timeout=5,
 		)
+
+		# 카톡이 실제 frontmost로 올라올 때까지 최대 3초 대기 (15 × 0.2s).
+		# 사용자가 Claude Code 등 다른 앱에 포커스를 유지하고 있으면
+		# activate만으로는 포커스를 훔쳐오지 못한다. 이 경우 keystroke
+		# 실행을 포기해야 엉뚱한 앱에 키가 안 들어간다.
+		kt_ready = False
+		for _ in range(15):
+			if _is_kakaotalk_frontmost():
+				kt_ready = True
+				break
+			time.sleep(0.2)
+
+		if not kt_ready:
+			logger.warning(
+				"카카오톡이 frontmost가 아님 — keystroke 생략, "
+				"kmsg --deep-recovery로 복구 시도"
+			)
+			return
+
 		subprocess.run(
 			["osascript", "-e", RAISE_MAIN_WINDOW_SCRIPT],
 			capture_output=True, text=True, timeout=5,
@@ -157,11 +205,12 @@ def _send(chat_target: str, message: str, dry_run: bool):
 
 	_prepare_kakaotalk()
 
-	# --keep-window: kmsg가 창을 바로 닫지 않게 함. 긴 메시지 전송 직후 카톡 내부의
-	# 파일 업/다운로드 파이프라인이 아직 동작 중일 때 닫으려고 하면 "채팅방을
-	# 닫으시겠습니까?" 모달이 떠서 다음 send를 블로킹한다. 우리가 _post_send_delay로
-	# 직접 대기하고, 창 정리는 다음 전송의 _prepare_kakaotalk가 담당.
-	base = ["kmsg", "send", "--keep-window"]
+	# --keep-window: 긴 메시지 전송 후 파일 업/다운로드 파이프라인과 창 닫기
+	# 타이밍이 겹쳐 "채팅방을 닫으시겠습니까?" 모달이 뜨는 것을 방지.
+	# --deep-recovery: 프론트가 카톡이 아니거나 사이드바 탭이 리셋된 상태
+	# 등에서도 kmsg가 자체적으로 윈도우 복구를 시도하도록 함 (우리가
+	# osascript keystroke 생략했을 때 폴백).
+	base = ["kmsg", "send", "--keep-window", "--deep-recovery"]
 	if chat_target.startswith("chat_"):
 		cmd = base + ["--chat-id", chat_target, message]
 	else:

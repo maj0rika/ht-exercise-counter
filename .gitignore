@@ -38,3 +38,4 @@ launchd/com.ht.exercise-counter.plist
 *.swp
 *.swo
 *~
+.omx/

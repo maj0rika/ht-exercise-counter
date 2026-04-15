@@ -329,6 +329,23 @@ brew tap kusin14/kakaocli && brew install kakaocli
 
 launchd에서 실행될 땐 `EnvironmentVariables.PATH`가 `/usr/local/bin:/opt/homebrew/bin` 모두 포함해야 한다. plist 템플릿에 이미 반영돼 있음.
 
+### 수동 테스트 중 시스템 경고음이 연속 반복됨 (굉음)
+
+수동으로 여러 건을 연달아 전송할 때 맥북 스피커에서 Funk/bonk 경고음이 반복된다면, **카카오톡이 frontmost(최상위 활성 앱)이 아닌 상태에서 Cmd+2 키스트로크가 엉뚱한 앱(예: 터미널 / Claude Code / Electron 기반 앱)으로 전달**되고 있기 때문.
+
+현재 `notifier._prepare_kakaotalk()`은 매 전송 직전에:
+1. `tell application "KakaoTalk" to activate` 실행
+2. 카톡이 실제 frontmost로 올라올 때까지 최대 3초 대기
+3. frontmost가 되면 `AXRaise` + `Cmd+2` 실행
+4. 안 되면 keystroke 생략 + kmsg `--deep-recovery`로 폴백
+
+**권장 사항**:
+- 수동 테스트 시 카카오톡 창을 먼저 클릭해 앞에 띄운 뒤 스크립트 실행
+- 시스템 볼륨을 낮춰두면 잠재적 bonk가 들려도 부담 적음
+- launchd 23:00 자동 실행 경로는 다른 앱이 frontmost가 아니므로 이 문제 영향권 밖
+
+---
+
 ### `kmsg send: rc=1` 또는 "Chat not found" 가 연속 전송 때만 발생
 
 첫 번째 전송은 성공했는데 두 번째부터 실패한다면, 카카오톡 사이드바가 '친구' 또는 '오픈채팅' 탭으로 리셋된 상태다. kmsg는 **현재 활성 사이드바 탭 안에서만** 채팅방을 검색하므로, '채팅' 탭이 아니면 찾지 못한다.

@@ -99,6 +99,82 @@ def _raise_main_window():
 
 ---
 
+## 이슈. 수동 테스트 중 macOS Funk 경고음 폭주 (굉음)
+
+### 증상
+
+수동으로 여러 건 연속 전송 스크립트를 돌렸을 때, 맥북 스피커에서 시스템 경고음이 빠르게 반복되며 사용자가 "굉음"이라고 표현할 정도로 크게 울렸다. 동시에 kmsg는 `rc=1`로 첫 번째 전송부터 실패.
+
+진단 시점:
+- `osascript`로 확인한 frontmost 앱: `Electron` (Claude Code 본체)
+- 시스템 볼륨: 63/100
+- 백그라운드 전송 스크립트 출력: `kmsg send 실패 (rc=1)` 첫 줄부터
+
+### 원인
+
+`_prepare_kakaotalk`이 매 `_send` 호출 직전에 실행하던 세 AppleScript:
+
+```applescript
+tell application "KakaoTalk" to activate
+tell application "System Events" to tell process "KakaoTalk" to perform action "AXRaise" of ...
+tell application "System Events" to tell process "KakaoTalk" to keystroke "2" using command down
+```
+
+문제는 **세 번째 줄**. `tell process "KakaoTalk" to keystroke ...` 구문에도 불구하고 System Events의 `keystroke`는 실제로 **OS 전역 입력 스트림**을 통해 키를 쏘기 때문에, 진짜 frontmost 앱이 키를 받는다.
+
+macOS는 보안상 `activate`만으로는 **다른 앱의 인풋 포커스를 자동으로 넘겨주지 않는다**. 사용자가 Claude Code(Electron)를 계속 보고 있는 동안 카톡은 `activate`만 받고 실제 frontmost는 Electron 그대로. 그 상태에서 `keystroke "2" using command down`이 날아가면:
+
+1. Electron(Claude Code)이 Cmd+2를 받음
+2. Claude Code가 이 단축키를 처리 못 해 **시스템 Funk 알림음**(`/System/Library/Sounds/Funk.aiff`) 재생
+3. `_prepare_kakaotalk`가 매 전송마다 3번씩 osascript를 호출하는데, 이 중 AXRaise / keystroke도 실패하면 각각 bonk → 3건 시도 × 여러 번 = 10회 이상 경고음이 0.2~0.4초 간격으로 반복
+4. 볼륨 63 환경에서 굉음처럼 들림
+5. 카톡은 포커스를 못 잡아 `kmsg send`도 `rc=1`로 실패
+
+### 해결
+
+`_prepare_kakaotalk`에 **frontmost 가드** 추가:
+
+```python
+def _is_kakaotalk_frontmost() -> bool:
+    r = subprocess.run(["osascript", "-e",
+        'tell application "System Events" to get name of first process whose frontmost is true'],
+        capture_output=True, text=True, timeout=3)
+    return "KakaoTalk" in (r.stdout or "")
+
+def _prepare_kakaotalk():
+    subprocess.run(["osascript", "-e", 'tell application "KakaoTalk" to activate'], ...)
+    for _ in range(15):
+        if _is_kakaotalk_frontmost():
+            break
+        time.sleep(0.2)
+    else:
+        logger.warning("카카오톡이 frontmost가 아님 — keystroke 생략")
+        return
+    # 이제 카톡이 확실히 frontmost이므로 AXRaise / Cmd+2 안전
+    ...
+```
+
+추가로 `kmsg send`에 `--deep-recovery` 플래그를 붙여, 탭 전환 keystroke를 생략한 경우에도 kmsg 자체가 윈도우 복구를 시도하도록 한다.
+
+```python
+base = ["kmsg", "send", "--keep-window", "--deep-recovery"]
+```
+
+### 검증
+
+- 카톡을 앞에 띄우지 않은 상태에서 전송 시도: `"카카오톡이 frontmost가 아님 — keystroke 생략, kmsg --deep-recovery로 복구 시도"` 경고 + keystroke 전혀 안 날아감 → 엉뚱한 앱에 Cmd+2 누설 없음 → Funk 경고음 없음
+- 사용자가 직접 카톡을 앞에 띄운 뒤 실행: 기존처럼 AXRaise + Cmd+2 정상 동작
+- launchd 23:00 백그라운드 실행: 다른 앱이 frontmost가 아니므로 원래 이 문제 영향권 밖
+
+### 교훈
+
+- `tell process "X" to keystroke ...`는 **타겟팅이 아니라 힌트**에 가깝다. 실제 키 전달은 OS 전역 입력 큐를 거치므로 현재 frontmost가 받는다.
+- 자동화로 앱을 "앞으로 올리는" 것과 "인풋 포커스를 뺏는" 것은 macOS에서 별개. `activate`는 전자만 보장한다.
+- 수동 테스트 스크립트가 호출하는 UI 조작 명령은 **항상 frontmost 확인 후 실행** 해야 엉뚱한 앱으로 키 누설 안 됨.
+- 시스템 볼륨이 높을 때 bonk 반복은 "굉음"으로 체감될 수 있다. 자동화 도구가 내는 비명은 곧 "내가 지금 UI를 잘못 건드리고 있다"는 신호다.
+
+---
+
 ## 이슈 3. 연속 전송 시 2번째부터 `kmsg send` 실패 — 사이드바 탭 문제
 
 ### 증상
