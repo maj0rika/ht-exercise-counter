@@ -94,6 +94,22 @@ class Storage:
 		)
 		self.conn.commit()
 
+	def get_week_member_timestamps(self, week_key: str) -> dict:
+		"""주간 멤버별 인증 timestamp(ISO 8601) 리스트.
+
+		Returns: {member_name: [msg_datetime, ...]}
+		"""
+		rows = self.conn.execute(
+			"SELECT member_name, msg_datetime FROM verifications "
+			"WHERE week_key = ? ORDER BY member_name, msg_datetime",
+			(week_key,)
+		).fetchall()
+
+		result: dict[str, list[str]] = {}
+		for row in rows:
+			result.setdefault(row["member_name"], []).append(row["msg_datetime"])
+		return result
+
 	def get_week_daily_records(self, week_key: str) -> list[dict]:
 		"""특정 주의 일별 기록 조회"""
 		rows = self.conn.execute(

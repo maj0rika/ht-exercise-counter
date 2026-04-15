@@ -19,6 +19,8 @@
   "db_path": "data/counter.db",
   "dry_run": true,
 
+  "templates_dir": "templates",
+
   "members": [
     {
       "user_id": 1111111,

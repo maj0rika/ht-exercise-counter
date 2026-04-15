@@ -144,27 +144,142 @@ launchctl unload ~/Library/LaunchAgents/com.ht.exercise-counter.plist
 - `canonical`: 리포트에 표시될 정규명
 - `aliases`: 동일인의 모든 표기 (정규화 용도)
 
-### chat_id / user_id 조회 방법
+### 메시지 템플릿 커스터마이징
+
+운영진방에 전송되는 문구는 `templates/` 디렉토리의 **.md 파일**로 관리한다. 코드나 JSON을 건드릴 필요 없이 텍스트 파일을 편집하듯 자유롭게 바꿀 수 있다.
+
+```
+templates/
+├── daily.md   # 일별 집계 리포트
+├── weekly.md  # 주간 요약 리포트 (일요일만)
+└── error.md   # 수집/시스템 오류 알림
+```
+
+`templates/daily.md`:
+
+```md
+[HT 인증 집계] {date}
+총 인증: {capped_count}건{multi_upload_block}{member_list_block}
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+`templates/weekly.md`:
+
+```md
+[HT 주간 인증 요약] {week_key}{member_details_block}
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+`templates/error.md`:
+
+```md
+[HT 인증 시스템 오류]
+{error_msg}
+수동 확인이 필요합니다.
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+#### 사용 가능한 플레이스홀더
+
+| 템플릿 | 키 | 설명 |
+|---|---|---|
+| `daily.md` | `{date}` | 집계 날짜 (예: `2026-04-15`) |
+| `daily.md` | `{capped_count}` | 총 인증 건수 (일일 캡 적용) |
+| `daily.md` | `{multi_upload_block}` | 2회 이상 올린 사람만 `[다회 업로드]` 섹션으로 (없으면 빈 문자열) |
+| `daily.md` | `{member_list_block}` | 인증자 이름을 쉼표로 나열 (`"인증자: 홍길동, 김철수, ..."`) |
+| `weekly.md` | `{week_key}` | 주 식별자 (ISO 형식: `2026-W16`) |
+| `weekly.md` | `{member_details_block}` | 모든 멤버 × (횟수 + 각 인증 timestamp 시:분). 횟수 내림차순 정렬. |
+| `error.md` | `{error_msg}` | 에러 본문 |
+
+#### 출력 예시
+
+**Daily (평상시)**
+
+```
+[HT 인증 집계] 2026-04-15
+총 인증: 55건
+
+인증자: 김철수, 박영희, 이영수, ..., 홍길동
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+**Daily (누군가 하루에 여러 번 올린 경우)**
+
+```
+[HT 인증 집계] 2026-04-15
+총 인증: 55건
+
+[다회 업로드]
+  홍길동: 3회
+  김철수: 2회
+
+인증자: 박영희, ..., 김철수, ..., 홍길동, ...
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+**Weekly**
+
+```
+[HT 주간 인증 요약] 2026-W16
+
+김철수: 4회
+  - 04-13 월 07:23
+  - 04-14 화 07:45
+  - 04-15 수 07:30
+  - 04-16 목 08:12
+
+홍길동: 2회
+  - 04-13 월 18:05
+  - 04-15 수 19:22
+
+박영희: 0회
+
+— AI 자동 송신 (HT 운동 인증 카운터)
+```
+
+timestamp는 `"MM-DD 요일 HH:MM"` 포맷(KST)으로 자동 변환된다. 반복 행 스타일이나 포맷을 바꾸고 싶으면 `notifier.py`의 `_render_*_block` / `_format_ts` 함수를 수정.
+
+템플릿 경로는 `config.templates_dir`로 변경 가능 (기본값: `templates`).
+
+### 멤버 목록 자동 동기화
+
+`members` 배열을 수동으로 관리할 필요 없다. `sync_members.py`가 카카오톡 로컬 DB에서 해당 인증방에 메시지를 보낸 적 있는 모든 유저를 추출해 기존 엔트리와 병합한다:
+
+```bash
+# 변경 사항 미리보기 (config.json 수정하지 않음)
+python3 sync_members.py --dry-run
+
+# 실제 반영 (config.json.bak 자동 백업)
+python3 sync_members.py
+
+# 채팅방에서 사라진 멤버 제거까지 반영
+python3 sync_members.py --prune
+```
+
+동작:
+- 기존 `canonical` / `aliases`는 그대로 보존
+- 현재 DB의 `displayName`이 `aliases`에 없으면 추가
+- 신규 `user_id`는 새 엔트리로 생성 (canonical = 닉네임에서 `.연도` 접미사 제거)
+- 기본 동작은 사라진 멤버를 **보존** (과거 집계 이력 보호). 정리하려면 `--prune`.
+
+내부 쿼리는 `NTChatMessage` + `NTMultiProfile`(linkId=0) + `NTUser` LEFT JOIN. 잠수 중인(메시지 기록이 전혀 없는) 멤버는 이 방법으로 잡히지 않지만, 인증 집계 목적에서는 메시지 이력이 있는 유저만 대상이므로 충분.
+
+### chat_id 수동 조회 방법
 
 ```bash
 # kakaocli 정수 chat_id 조회 (수집용)
 kakaocli chats | grep HT
 
-# 또는 DB 직접 쿼리 (HT가 포함된 채팅방)
-kakaocli query "SELECT id, title FROM NTChat WHERE title LIKE '%HT%'"
+# 또는 DB 직접 쿼리
+kakaocli query "SELECT chatId, chatName FROM NTChatRoom WHERE chatName LIKE '%HT%' OR extra LIKE '%HT%'"
 
 # kmsg hash chat_id 조회 (전송용)
 kmsg chats --json | python3 -m json.tool | grep -B1 '운영진'
-
-# 해당 방의 참가자 목록 추출 (멀티프로필 중복 제거)
-kakaocli query "
-  SELECT DISTINCT u.id, p.name
-  FROM NTMember m
-  JOIN NTUser u ON m.userId = u.id
-  LEFT JOIN NTMultiProfile p
-    ON p.userId = u.id AND p.chatId = m.chatId AND p.linkId = 0
-  WHERE m.chatId = <CHAT_ID>
-"
 ```
 
 ## 파일 구조
@@ -176,8 +291,13 @@ ht-exercise-counter/
 ├── counter.py                                   # 사진 필터링, 일별/주간 집계, 중복플래그
 ├── storage.py                                   # SQLite CRUD, 멱등성 (msg_hash UNIQUE)
 ├── notifier.py                                  # kmsg send 래퍼 (운영진방 전송)
+├── sync_members.py                              # members 배열 자동 동기화 (kakaocli DB 기반)
 ├── config.example.json                          # 설정 템플릿
 ├── config.json                                  # 실사용 설정 (.gitignore)
+├── templates/                                   # 메시지 템플릿 (md 파일로 관리)
+│   ├── daily.md                                 # 일별 집계 포맷
+│   ├── weekly.md                                # 주간 요약 포맷
+│   └── error.md                                 # 에러 알림 포맷
 ├── install-launchd.sh                           # launchd 등록 스크립트
 ├── launchd/
 │   └── com.ht.exercise-counter.plist.template   # launchd 템플릿 (플레이스홀더 포함)
@@ -208,6 +328,27 @@ brew tap kusin14/kakaocli && brew install kakaocli
 ```
 
 launchd에서 실행될 땐 `EnvironmentVariables.PATH`가 `/usr/local/bin:/opt/homebrew/bin` 모두 포함해야 한다. plist 템플릿에 이미 반영돼 있음.
+
+### `kmsg send: rc=1` 또는 "Chat not found" 가 연속 전송 때만 발생
+
+첫 번째 전송은 성공했는데 두 번째부터 실패한다면, 카카오톡 사이드바가 '친구' 또는 '오픈채팅' 탭으로 리셋된 상태다. kmsg는 **현재 활성 사이드바 탭 안에서만** 채팅방을 검색하므로, '채팅' 탭이 아니면 찾지 못한다.
+
+`notifier._prepare_kakaotalk()`이 매 전송 직전에 자동으로:
+1. KakaoTalk `activate`
+2. "카카오톡" 메인 창 `AXRaise`
+3. `Cmd+2` 단축키로 '채팅' 탭 강제 전환
+4. 0.4초 delay
+
+를 수행한다. 이 경로가 막혀 있는지 수동 재현:
+
+```bash
+osascript -e 'tell application "KakaoTalk" to activate'
+osascript -e 'tell application "System Events" to tell process "KakaoTalk" to perform action "AXRaise" of (first window whose name is "카카오톡")'
+osascript -e 'tell application "System Events" to tell process "KakaoTalk" to keystroke "2" using command down'
+# 이 상태에서 kmsg send가 되는지 확인
+```
+
+KakaoTalk 단축키: `Cmd+1`(친구) / `Cmd+2`(채팅) / `Cmd+3`(오픈채팅). 다른 앱에서 이 단축키가 가로채고 있지 않은지도 확인.
 
 ### `kmsg send: WINDOW_NOT_READY`
 

@@ -99,7 +99,60 @@ def _raise_main_window():
 
 ---
 
-## 이슈 3. `kmsg`가 셀프챗을 열지 못함
+## 이슈 3. 연속 전송 시 2번째부터 `kmsg send` 실패 — 사이드바 탭 문제
+
+### 증상
+
+4개 리포트(daily 평상시, daily 다회 업로드, weekly, empty daily)를 연속 전송하는 통합 테스트에서 **첫 번째만 성공하고 2~4번째가 모두 `kmsg send 실패 (rc=1)`** 로 끝남. 
+
+```
+2026-04-16 01:27:13,930 [INFO] 전송 완료 → chat_XXXXXXXXXXXX
+2026-04-16 01:27:21,042 [ERROR] kmsg send 실패 (rc=1): 
+2026-04-16 01:27:26,703 [ERROR] kmsg send 실패 (rc=1): 
+2026-04-16 01:27:32,167 [ERROR] kmsg send 실패 (rc=1): 
+```
+
+### 원인
+
+카카오톡 UI를 직접 확인한 결과, 사이드바가 **'친구' 탭**으로 리셋되어 있었다. kmsg는 채팅방을 검색할 때 **현재 활성화된 사이드바 탭 내부에서만** 목록을 순회하기 때문에, 친구 탭이 활성이면 채팅방 검색이 실패한다.
+
+- 첫 번째 전송은 수동으로 카톡을 열어 둔 시점의 채팅 탭 상태 덕분에 성공
+- 이후 `kmsg send`가 창을 닫거나 다른 탭으로 돌아가면 다음 전송부터 친구 탭에서 검색
+- osascript `AXRaise`만으로는 탭 상태가 바뀌지 않는다
+
+### 해결 — `_prepare_kakaotalk`에서 매번 Cmd+2로 '채팅' 탭 강제 전환
+
+`notifier.py`:
+
+```python
+SWITCH_TO_CHAT_TAB_SCRIPT = (
+    'tell application "System Events" to tell process "KakaoTalk" '
+    'to keystroke "2" using command down'
+)
+
+def _prepare_kakaotalk():
+    subprocess.run(["osascript", "-e", 'tell application "KakaoTalk" to activate'], ...)
+    subprocess.run(["osascript", "-e", RAISE_MAIN_WINDOW_SCRIPT], ...)
+    subprocess.run(["osascript", "-e", SWITCH_TO_CHAT_TAB_SCRIPT], ...)
+    time.sleep(0.4)
+```
+
+카카오톡 Mac의 단축키는:
+- `Cmd+1` → 친구
+- `Cmd+2` → 채팅  ← kmsg가 필요로 하는 탭
+- `Cmd+3` → 오픈채팅
+
+매 `_send` 호출 직전에 이 시퀀스를 실행해서, 이전 상태와 상관없이 "채팅 탭이 활성화된 메인 창"을 보장한다.
+
+### 교훈
+
+- AX 자동화 도구는 "앱이 떠 있다" ≠ "올바른 UI 상태다"
+- 멀티 탭 UI를 자동화할 땐 탭 상태까지 **매 호출마다 강제 복원** 해야 안정적
+- 연속 전송 테스트는 배치로 돌려야 이런 상태 누수를 잡을 수 있다 (단일 전송만 테스트하면 놓침)
+
+---
+
+## 이슈 4. `kmsg`가 셀프챗을 열지 못함
 
 ### 증상
 

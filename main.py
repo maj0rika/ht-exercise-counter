@@ -23,6 +23,7 @@ from counter import (
 )
 from notifier import send_daily_report, send_weekly_report, send_error_alert
 from storage import Storage
+from sync_members import fetch_members_from_db
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -95,6 +96,7 @@ def main():
 			send_error_alert(
 				admin_target,
 				f"{today} 수집 결과 0건. DB 동기화 상태 확인 필요.",
+				config,
 				dry_run,
 			)
 			return
@@ -130,31 +132,48 @@ def main():
 		db.save_daily_summary(today, daily)
 		db.log_run("daily", "success", f"{daily['capped_count']}건 집계")
 
-		send_daily_report(admin_target, daily, dry_run)
+		send_daily_report(admin_target, daily, config, dry_run)
 
 		if is_sunday:
 			logger.info("주간 요약 생성 중...")
-			week_records = db.get_week_daily_records(week_key)
-			week_sum = weekly_summary(week_records, config)
+			member_timestamps = db.get_week_member_timestamps(week_key)
+
+			# 현재 인증방에 있는 멤버만 리포트에 포함.
+			# since_days=28: 최근 4주 안에 메시지를 보낸 적 있는 user_id 집합.
+			# 방을 나간 사람은 자연스럽게 빠진다.
+			active_canonical = None
+			try:
+				active_list = fetch_members_from_db(config["chat_id"], since_days=28)
+				active_ids = {m["user_id"] for m in active_list}
+				active_canonical = [
+					m["canonical"]
+					for m in config.get("members", [])
+					if m.get("user_id") in active_ids
+				]
+				logger.info(
+					f"활성 멤버 {len(active_canonical)}/{len(config.get('members', []))}명 "
+					f"(최근 28일 기준)"
+				)
+			except Exception as e:
+				logger.warning(f"활성 멤버 조회 실패, 전체 members 사용: {e}")
+
+			week_sum = weekly_summary(member_timestamps, config, active_members=active_canonical)
 			db.save_weekly_summary(week_key, week_sum)
 
-			send_weekly_report(admin_target, week_sum, dry_run)
+			send_weekly_report(admin_target, week_sum, config, dry_run)
 			db.log_run("weekly", "success", f"week {week_key}")
-			logger.info(
-				f"주간 요약 완료: 달성 {len(week_sum['achieved'])}명, "
-				f"미달 {len(week_sum['not_achieved'])}명"
-			)
+			logger.info(f"주간 요약 완료: 멤버 {len(week_sum['members'])}명")
 
 		logger.info("=== 집계 완료 ===")
 
 	except CollectionError as e:
 		logger.error(f"수집 실패: {e}")
 		db.log_run("daily", "error", str(e))
-		send_error_alert(admin_target, f"수집 실패: {e}", dry_run)
+		send_error_alert(admin_target, f"수집 실패: {e}", config, dry_run)
 	except Exception as e:
 		logger.error(f"예기치 않은 오류: {e}", exc_info=True)
 		db.log_run("daily", "error", str(e))
-		send_error_alert(admin_target, f"시스템 오류: {e}", dry_run)
+		send_error_alert(admin_target, f"시스템 오류: {e}", config, dry_run)
 	finally:
 		db.close()
 

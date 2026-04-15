@@ -29,6 +29,7 @@ def count_verifications(messages: list[dict], config: dict, target_date: str | N
 	todays_msgs.sort(key=lambda x: x[0])
 
 	daily_counts: dict[str, set[str]] = defaultdict(set)
+	raw_counts: dict[str, int] = defaultdict(int)
 	flagged: list[dict] = []
 	last_upload: dict[str, datetime] = {}
 
@@ -48,48 +49,57 @@ def count_verifications(messages: list[dict], config: dict, target_date: str | N
 
 		last_upload[canonical] = sent_at
 		daily_counts[canonical].add(today_str)
+		raw_counts[canonical] += 1
 
 	counts = {member: len(dates) for member, dates in daily_counts.items()}
 
 	return {
 		"date": today_str,
 		"counts": counts,
+		"raw_counts": dict(raw_counts),
 		"flagged": flagged,
 		"raw_photo_count": len(todays_msgs),
 		"capped_count": sum(counts.values()),
 	}
 
 
-def weekly_summary(daily_records: list[dict], config: dict) -> dict:
-	"""일별 기록 → 주간 요약"""
-	target = config.get("weekly_target", 4)
-	members = [m["canonical"] for m in config.get("members", [])]
+def weekly_summary(
+	member_timestamps: dict,
+	config: dict,
+	active_members: list | None = None,
+) -> dict:
+	"""멤버별 timestamp 리스트 → 주간 요약.
 
-	weekly_counts: dict[str, int] = defaultdict(int)
-	for record in daily_records:
-		for member, count in record.get("counts", {}).items():
-			weekly_counts[member] += count
+	Args:
+		member_timestamps: {canonical_name: [iso_str, ...]}
+		active_members: 현재 채팅방에 있는 canonical 이름 리스트 (옵션).
+			None이면 config.members 전체 사용. 지정하면 이 리스트 안에 있는
+			멤버만 리포트에 포함 → "방을 나간 멤버 제외" 효과.
 
-	achieved = []
-	not_achieved = []
-	for member in members:
-		count = weekly_counts.get(member, 0)
-		if count >= target:
-			achieved.append(member)
-		else:
-			not_achieved.append({
-				"name": member,
-				"count": count,
-				"shortfall": target - count,
-			})
+	Returns:
+		{
+			"week_key": "YYYY-WNN",
+			"members": [{"name", "count", "timestamps"}, ...]  # count DESC, name ASC
+		}
+	"""
+	if active_members is not None:
+		all_members = list(active_members)
+	else:
+		all_members = [m["canonical"] for m in config.get("members", [])]
+	active_set = set(all_members)
+
+	rows = []
+	for name in all_members:
+		stamps = sorted(member_timestamps.get(name, []))
+		rows.append({"name": name, "count": len(stamps), "timestamps": stamps})
+
+	# 활성 리스트에 없는 이름(ex. unknown_xxx)은 제외한다.
+	# active_members를 지정했을 때는 방을 나간 사람 / 낯선 발신자 모두 버림.
+
+	rows.sort(key=lambda r: (-r["count"], r["name"]))
 
 	week_key = datetime.now(KST).strftime("%G-W%V")
-	return {
-		"week_key": week_key,
-		"member_counts": dict(weekly_counts),
-		"achieved": achieved,
-		"not_achieved": not_achieved,
-	}
+	return {"week_key": week_key, "members": rows}
 
 
 def filter_photo_messages(messages: list[dict], photo_type) -> list[dict]:
