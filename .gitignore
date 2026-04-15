@@ -1,0 +1,40 @@
+# 개인 정보 포함 — 실제 설정
+config.json
+
+# Runtime artifacts
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.Python
+
+# OMC / Ralph session state
+.omc/
+prd.json
+progress.txt
+
+# 로컬 설치된 launchd plist (실제 절대 경로 포함)
+launchd/com.ht.exercise-counter.plist
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

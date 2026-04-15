@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ht.exercise-counter</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__PROJECT_ROOT__/main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <!-- 매일 23:00 KST 실행 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>23</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/logs/out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/logs/error.log</string>
+
+    <!-- 환경 변수 (PATH에 kakaocli / kmsg 포함) -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>TZ</key>
+        <string>Asia/Seoul</string>
+    </dict>
+
+    <!-- Mac 잠자기 중 놓친 작업은 깨어나면 자동 실행 (StartCalendarInterval 기본 동작) -->
+</dict>
+</plist>
