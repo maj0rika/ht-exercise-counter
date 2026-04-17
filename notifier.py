@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import logging
 import time
@@ -28,6 +29,99 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+_DB_LOCK_TOKENS = (
+	"file is not a database",
+	"database is locked",
+	"disk I/O error",
+)
+
+
+def _kakaocli_query_json(sql: str, label: str = "query", timeout: int = 15, max_retries: int = 6) -> list:
+	"""kakaocli query 실행 + DB 락 자동 재시도 + JSON 파싱."""
+	last_err = ""
+	for attempt in range(1, max_retries + 1):
+		result = subprocess.run(
+			["kakaocli", "query", sql],
+			capture_output=True, text=True, timeout=timeout,
+		)
+		if result.returncode == 0:
+			try:
+				return json.loads(result.stdout or "[]")
+			except json.JSONDecodeError as e:
+				raise RuntimeError(f"kakaocli JSON 파싱 실패 ({label}): {e}")
+		last_err = (result.stderr or "").strip()
+		if any(tok in last_err for tok in _DB_LOCK_TOKENS):
+			time.sleep(0.4 * attempt)
+			continue
+		break
+	raise RuntimeError(f"kakaocli query 실패 ({label}): {last_err}")
+
+
+def _resolve_admin_chat_int_id(config: dict) -> int | None:
+	"""운영진 채팅방의 NTChatRoom.chatId (integer) 찾기.
+
+	우선순위: config.admin_kakao_chat_id > NTChatRoom.chatName 조회.
+	DB 검증 전용이고, 송신은 여전히 admin_chat_id(kmsg hash) / admin_chat_name으로 처리.
+	"""
+	if config.get("admin_kakao_chat_id"):
+		try:
+			return int(config["admin_kakao_chat_id"])
+		except (TypeError, ValueError):
+			pass
+	name = config.get("admin_chat_name")
+	if not name:
+		return None
+	escaped = str(name).replace("'", "''")
+	sql = f"SELECT chatId FROM NTChatRoom WHERE chatName = '{escaped}' LIMIT 1"
+	try:
+		rows = _kakaocli_query_json(sql, label="admin chatId 조회", timeout=10)
+		if rows and rows[0] and rows[0][0] is not None:
+			return int(rows[0][0])
+	except Exception as e:
+		logger.warning(f"admin chat integer ID 조회 실패: {e}")
+	return None
+
+
+def _verify_sent_via_db(chat_int_id: int, message: str, started_at: float, max_wait: float = 12.0) -> bool:
+	"""전송 후 NTChatMessage에 동일 본문이 기록됐는지 폴링.
+
+	AX 입력창 비움 검증을 통과해도, 네트워크 실패 등으로 서버 전송이 안 되면
+	NTChatMessage에 이벤트가 남지 않는다. 여기서 이걸 최종 확인한다.
+
+	메시지 첫 25자를 SQL LIKE prefix로 조회. `%`/`_`/`'`는 escape.
+	"""
+	if not chat_int_id:
+		return False
+
+	started_unix = int(started_at) - 3  # 타이밍 오차 여유
+	first_line = (message or "").split("\n", 1)[0]
+	prefix = first_line[:25]
+	if not prefix.strip():
+		logger.warning("DB 검증 skip: 메시지 첫 줄이 비어있음")
+		return True
+
+	prefix_escaped = (
+		prefix.replace("\\", "\\\\").replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+	)
+
+	deadline = time.time() + max_wait
+	while time.time() < deadline:
+		sql = (
+			"SELECT logId FROM NTChatMessage "
+			f"WHERE chatId = {int(chat_int_id)} "
+			f"  AND sentAt >= {started_unix} "
+			f"  AND message LIKE '{prefix_escaped}%' ESCAPE '\\' "
+			"ORDER BY sentAt DESC LIMIT 1"
+		)
+		try:
+			rows = _kakaocli_query_json(sql, label="DB 전송 검증", timeout=8)
+			if rows:
+				return True
+		except Exception as e:
+			logger.debug(f"DB 검증 쿼리 실패(재시도 계속): {e}")
+		time.sleep(0.5)
+	return False
 
 DEFAULT_TEMPLATES_DIR = "templates"
 DEFAULT_ADMIN_SENDER = "kmsg"
@@ -85,9 +179,25 @@ on run argv
 		tell process "KakaoTalk"
 			if name of front window is not targetTitle then error "Front window is not target chat"
 			if not (exists text area 1 of scroll area 2 of front window) then error "Target chat input not found"
-			set value of text area 1 of scroll area 2 of front window to messageBody
+			set inputArea to text area 1 of scroll area 2 of front window
+			-- AX value 세팅만으로는 키보드 포커스가 text area에 없어
+			-- key code 36(Enter)이 씹히는 경우가 있다. 포커스 강제.
+			set focused of inputArea to true
 			delay 0.05
+			set value of inputArea to messageBody
+			delay 0.1
 			key code 36
+			-- 전송 검증: 입력창이 실제로 비워졌는지 최대 ~3초 폴링.
+			-- 전송 성공 시 카톡이 text area를 자동으로 비우는 동작에 의존.
+			set sentOk to false
+			repeat 30 times
+				if (value of inputArea) is "" then
+					set sentOk to true
+					exit repeat
+				end if
+				delay 0.1
+			end repeat
+			if not sentOk then error "send verification failed: input box still contains text after Enter"
 		end tell
 	end tell
 end run
@@ -373,18 +483,50 @@ def _set_text_and_send(chat_target: str, message: str, config: dict):
 	open_name = _resolve_open_chat_name(chat_target, config)
 	_focus_chat_window(chat_target, config)
 
-	result = _run_osascript(SET_TEXT_AND_SEND_SCRIPT, open_name, message, timeout=5)
+	# 폴링 검증이 최대 ~3초 걸리므로 osascript timeout을 여유 있게.
+	result = _run_osascript(SET_TEXT_AND_SEND_SCRIPT, open_name, message, timeout=10)
 	if result.returncode != 0:
-		raise RuntimeError(f"본문 세팅 전송 실패: {result.stderr.strip() or result.stdout.strip()}")
+		err = result.stderr.strip() or result.stdout.strip()
+		raise RuntimeError(f"본문 세팅 전송 실패 (AX 검증 포함): {err}")
+
+
+def _send_verified(chat_target: str, message: str, config: dict, admin_int_id: int | None):
+	"""AX 본문 세팅 전송 + 2단계 검증.
+
+	검증 단계:
+	1) AX 입력창 비움 (SET_TEXT_AND_SEND_SCRIPT 내부 폴링) — 기본적으로 텍스트가
+	   실제로 보내져야 입력창이 비워지는 카톡 동작에 의존.
+	2) NTChatMessage DB 폴링 — 네트워크 실패/서버 오류로 실제 전송이 안 되면
+	   DB에 기록이 남지 않으므로 여기서 최종 확인.
+
+	admin_int_id가 None이면 DB 검증 생략 (AX 검증만 적용).
+	두 단계 중 하나라도 실패하면 RuntimeError.
+	"""
+	started_at = time.time()
+	_set_text_and_send(chat_target, message, config)
+	logger.info(f"AX 전송 완료 (입력창 비움 검증 통과) → {chat_target}")
+
+	if admin_int_id:
+		if _verify_sent_via_db(admin_int_id, message, started_at):
+			logger.info(f"DB 검증 통과 (NTChatMessage 기록 확인, chatId={admin_int_id})")
+		else:
+			raise RuntimeError(
+				"DB 검증 실패: AX 입력창은 비워졌으나 NTChatMessage에 동일 본문이 "
+				"기록되지 않았습니다. 네트워크 실패 또는 카톡 서버 오류 가능성."
+			)
 
 
 def _send_via_kmsg_ax(chat_target: str, message: str, config: dict):
-	"""기본 안전 경로: 채팅창 준비 후 본문 직접 세팅 전송."""
+	"""기본 안전 경로: 채팅창 준비 → AX 전송 → 2단계 검증."""
 	if not _chat_window_exists(chat_target, config):
 		_ensure_chat_ready(chat_target, config)
-	_set_text_and_send(chat_target, message, config)
-	logger.info(f"본문 직접 세팅 전송 완료 → {chat_target}")
-	time.sleep(0.8)
+
+	admin_int_id = _resolve_admin_chat_int_id(config)
+	if admin_int_id is None:
+		logger.warning("DB 검증 생략 (admin chat integer ID 확인 불가 — AX 검증만 적용)")
+
+	_send_verified(chat_target, message, config, admin_int_id)
+	time.sleep(0.3)
 
 
 def _send_via_kmsg_direct(chat_target: str, message: str):
@@ -399,21 +541,26 @@ def _send_via_kmsg_direct(chat_target: str, message: str):
 
 
 def _send(chat_target: str, message: str, dry_run: bool, config: dict):
-	"""운영진 채널 전송. 기본은 kmsg-assisted AXValue send."""
+	"""운영진 채널 전송. 기본은 kmsg-assisted AXValue send.
+
+	실패 시(AX 전송 실패 / DB 검증 실패 포함) 예외를 re-raise해서
+	호출자(main.py 등)가 에러 알림 또는 재시도를 결정할 수 있게 한다.
+	예전에는 예외를 logger.error로 삼키기만 해서 "집계 성공했지만 전송 누락"을
+	조용히 놓치는 문제가 있었다.
+	"""
 	if dry_run:
 		logger.info(f"[DRY RUN] → {chat_target}:\n{message}")
 		return
 
+	sender = _sender_backend(config)
 	try:
-		sender = _sender_backend(config)
 		if sender == "kmsg_direct":
 			_send_via_kmsg_direct(chat_target, message)
 		else:
 			_send_via_kmsg_ax(chat_target, message, config)
-	except subprocess.TimeoutExpired:
-		logger.error("전송 타임아웃")
 	except Exception as e:
-		logger.error(f"전송 예외: {e}")
+		logger.error(f"전송 실패: {e}")
+		raise
 
 
 def send_messages_batch(admin_chat: str, messages: list[str], config: dict, dry_run: bool = True):
@@ -435,7 +582,10 @@ def send_messages_batch(admin_chat: str, messages: list[str], config: dict, dry_
 	# 호출자가 메시지 리스트를 모두 만든 뒤 들어온 상태에서, 여기서는
 	# 채팅창 준비와 실제 전송만 처리한다.
 	_ensure_chat_ready(admin_chat, config)
-	for message in messages:
-		_set_text_and_send(admin_chat, message, config)
-		logger.info(f"배치 본문 직접 세팅 전송 완료 → {admin_chat}")
+	admin_int_id = _resolve_admin_chat_int_id(config)
+	if admin_int_id is None:
+		logger.warning("DB 검증 생략 (admin chat integer ID 확인 불가 — AX 검증만 적용)")
+	for idx, message in enumerate(messages, start=1):
+		_send_verified(admin_chat, message, config, admin_int_id)
+		logger.info(f"배치 {idx}/{len(messages)} 전송 완료 → {admin_chat}")
 		time.sleep(0.8)

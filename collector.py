@@ -3,10 +3,48 @@ from __future__ import annotations
 
 import subprocess
 import json
+import time
 
 
 class CollectionError(Exception):
 	pass
+
+
+_DB_LOCK_TOKENS = (
+	"file is not a database",
+	"database is locked",
+	"disk I/O error",
+)
+
+
+def _run_kakaocli(cmd: list[str], label: str, timeout: int = 60, max_retries: int = 6) -> subprocess.CompletedProcess:
+	"""kakaocli 호출 + DB 락 자동 재시도.
+
+	카카오톡이 로컬 DB에 write 중이면 'file is not a database' 같은 에러가
+	일시적으로 나올 수 있다. 지수 백오프로 재시도한다.
+	"""
+	last_err = ""
+	for attempt in range(1, max_retries + 1):
+		try:
+			result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+		except subprocess.TimeoutExpired:
+			raise CollectionError(f"kakaocli 명령 타임아웃 ({timeout}초): {label}")
+		except FileNotFoundError:
+			raise CollectionError("kakaocli가 PATH에 없음. brew install 확인 필요")
+
+		if result.returncode == 0:
+			if attempt > 1:
+				print(f"  [{label}] DB 락 해소 완료 (재시도 {attempt-1}회)", flush=True)
+			return result
+
+		last_err = (result.stderr or "").strip()
+		if any(tok in last_err for tok in _DB_LOCK_TOKENS):
+			print(f"  [{label}] DB 잠김 — 대기 {attempt}/{max_retries}...", flush=True)
+			time.sleep(0.5 * attempt)
+			continue
+		break
+
+	raise CollectionError(f"kakaocli 실패 ({label}): {last_err}")
 
 
 def collect_messages(
@@ -32,15 +70,7 @@ def collect_messages(
 	else:
 		cmd.extend(["--chat", chat_name])
 
-	try:
-		result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-	except subprocess.TimeoutExpired:
-		raise CollectionError("kakaocli 명령 타임아웃 (60초)")
-	except FileNotFoundError:
-		raise CollectionError("kakaocli가 PATH에 없음. brew install 확인 필요")
-
-	if result.returncode != 0:
-		raise CollectionError(f"kakaocli 실패 (code={result.returncode}): {result.stderr.strip()}")
+	result = _run_kakaocli(cmd, label=f"messages --since {since} --limit {limit}", timeout=60)
 
 	if not result.stdout.strip():
 		raise CollectionError("kakaocli 출력이 비어있음. DB 동기화 상태 확인 필요")
