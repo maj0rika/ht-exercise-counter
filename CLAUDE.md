@@ -1,20 +1,23 @@
 # HT 운동 인증 카운터
 
 ## 프로젝트 개요
-카카오톡 [#HT] 인증방의 운동 인증 사진 업로드를 kakaocli로 자동 집계하는 시스템.
+카카오톡 [#HT] 인증방의 운동 인증 사진 업로드를 자동 집계하는 시스템.
+읽기는 kakaocli, 송신은 kmsg로 역할이 분리되어 있다.
 
 ## 아키텍처
-- kakaocli (Swift CLI) → 카카오톡 Mac 로컬 DB 읽기 + UI 자동화 전송
+- kakaocli (Swift CLI) → 카카오톡 Mac 로컬 DB 조회 **(읽기 전용)**
+- kmsg (Swift CLI) → 카카오톡 Accessibility API 자동화 송신 **(쓰기 전용)**
 - Python 3.12+ → 파싱/집계/저장
 - SQLite → 집계 데이터 영구 저장
 - launchd → 매일 23:00 자동 실행
 
 ## 파일 구조
 - main.py — 오케스트레이터
-- collector.py — kakaocli 호출, 메시지 수집
+- collector.py — kakaocli로 메시지 수집
 - counter.py — 사진 메시지 필터링, 인증 카운팅
 - storage.py — SQLite CRUD, 멱등성 보장
-- notifier.py — kakaocli send로 운영진 채널 전달
+- notifier.py — kmsg send로 운영진 채널 전달
+- sync_members.py — kakaocli query로 방 멤버/이름 동기화
 - config.json — 채팅방 이름, 멤버 목록, 설정값
 
 ## 핵심 규칙
@@ -25,13 +28,22 @@
 - msg_hash (SHA-256)로 멱등성 보장
 - 수집 결과 0건이면 정상 처리하지 않고 에러 알림
 - dry_run=true일 때 실제 전송하지 않음
+- **kakaocli는 DB 조회/파싱 전용. 어떤 경로로도 송신에 쓰지 말 것.**
+- **카톡으로 나가는 모든 메시지는 kmsg를 통한다.**
 
-## kakaocli 명령어
-- kakaocli messages --chat "HT" --since 1d --json → 메시지 수집
-- kakaocli query "SQL" → 직접 DB 쿼리
-- kakaocli send "운영진방" "메시지" → 결과 전달
-- kakaocli send --me _ "테스트" → 나에게 테스트 전송
+## CLI 명령어
+
+### 읽기 (kakaocli)
+- `kakaocli messages --chat "HT" --since 1d --json` → 메시지 수집
+- `kakaocli query "SQL"` → 로컬 DB 직접 쿼리 (멤버/방 정보 동기화 등)
+- `kakaocli chats` → 채팅방 목록과 chat_id 확인
+
+### 송신 (kmsg)
+- `kmsg send "[#HT] 운영진방" "메시지"` → 운영진 채널로 전달
+- `kmsg read "[#HT] 운영진방"` → 대상 방 열기 (AX 송신 전처리)
+- `kmsg status` / `kmsg chats --json` → 상태·방 목록 확인
 
 ## 테스트
-- 항상 --me 또는 --dry-run으로 먼저 테스트
+- 항상 `dry_run=true` 또는 `--dry-run` 플래그로 먼저 테스트
 - config.json의 dry_run을 true로 유지하면서 개발
+- 실제 송신을 확인해야 할 때는 admin_chat_id/admin_chat_name을 본인 전용 방으로 임시 바꾸고 kmsg로 테스트

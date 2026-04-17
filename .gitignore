@@ -1,5 +1,6 @@
 # 개인 정보 포함 — 실제 설정
 config.json
+*.bak
 
 # Runtime artifacts
 data/
